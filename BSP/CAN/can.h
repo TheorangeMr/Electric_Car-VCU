@@ -38,6 +38,7 @@
 ************************************************************/
 void CAN_Config(void);
 u8 Can_Send_Msg(u32 Ext_ID,u8* msg,u8 len);     //发送数据
+void Wit_Can_Send_Msg(uint8_t ucStdId, uint8_t* msg, uint32_t len);
 u8 Can_Receive_Msg(u8 *msg,u8 len);            //接收数据
 
 /* 传输返回标志 */
@@ -53,6 +54,9 @@ u8 Can_Receive_Msg(u8 *msg,u8 len);            //接收数据
 #define MCU_Status4  ((u32)0x0CFF0308) //标识符ID：0x0CFF0308   长度：8   周期：50ms
 #define DBG_Command  ((u32)0x0CFF08FF) //标识符ID：0x0CFF08FF   长度：8   周期：50ms
 #define DBG_Status   ((u32)0x18EFFFF5) //标识符ID：0x18EFFFF5   长度：8   周期：50ms
+
+#define Wit_dat   ((u32)0x50) //标识符ID：0x50    (标准帧)
+
 
 #define VCU_Command_flag   (1)
 #define VCU_Command2_flag  (2)

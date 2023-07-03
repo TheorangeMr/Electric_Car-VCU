@@ -18,6 +18,8 @@
 #include "can.h"
 #include "usart.h"
 #include "HGW_Protocol.h"
+#include "wit_c_sdk.h"
+
 
 /*
 *************************************************************************
@@ -26,7 +28,7 @@
 */
 
 #define USRAT_Memory_Throttle_Signal    0
-#define USART_Throttle_Signal_1         1
+#define USART_Throttle_Signal_1         0
 #define MCU_STATUS1_Signal              0
 #define MCU_STATUS2_Signal              0
 #define MCU_STATUS3_Signal              0
@@ -49,7 +51,7 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define EVENTBIT_3	(1<<3)				//MCU_STATUS3指令事件位
 #define EVENTBIT_4	(1<<4)				//MCU_STATUS4指令事件位
 #define EVENTBIT_5	(1<<5)				//DBG_STATUS指令事件位
-
+#define EVENTBIT_6	(1<<6)				//Wit_STATUS指令事件位
 
 /*
 *************************************************************************
@@ -65,7 +67,7 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define   MCU_STATUS3_Pr							9
 #define   MCU_STATUS4_Pr							8
 #define   CAN_RX_HANDLE_Pr           16 
-
+#define   Wit_Dat_HANDLE_Pr					 18
 
 /*
 *************************************************************************
@@ -81,6 +83,7 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define   MCU_STATUS3_Delay							299                    //MCU STATUS3     20sm
 #define   MCU_STATUS4_Delay							199                    //MCU STATUS4     50sm
 #define   CAN_RX_HANDLE_Delay           1
+#define   Wit_Dat_HANDLE_Delay          15
 
 /*
 *************************************************************************
@@ -102,7 +105,10 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define   MCU_STATUS3_Stack      64
 #define   MCU_STATUS4_Stack      64
 #define   VCU_Brake_Stack        128
-#define   CAN_RX_HANDLE_Stack    128
+#define   CAN_RX_HANDLE_Stack    256
+#define   Wit_Dat_HANDLE_Stack   128
+
+
 /*
 *************************************************************************
 *                             任务句柄初始化
@@ -117,7 +123,7 @@ static TaskHandle_t MCU_STATUS2_Task_Handle = NULL;
 static TaskHandle_t MCU_STATUS3_Task_Handle = NULL;
 static TaskHandle_t MCU_STATUS4_Task_Handle = NULL;
 static TaskHandle_t CAN_RX_HANDLE_Task_Handle = NULL;
-
+static TaskHandle_t Wit_Dat_HANDLE_Task_Handle = NULL;
 
 /*
 *************************************************************************
@@ -167,8 +173,10 @@ static void MCU_STATUS1_Show(void* parameter);
 static void MCU_STATUS2_Show(void* parameter);
 static void MCU_STATUS3_Show(void* parameter);
 static void MCU_STATUS4_Show(void* parameter);
+static void Wit_Dat_HANDLE(void* parameter);
 static __INLINE void LINEAR_SPEED_DEAL(void);
 static __INLINE void ADC_Get_Throttle_Signal(void);
+
 
 
 /*
@@ -192,6 +200,11 @@ int Memory_Throttle_Signal = 0;
 uint8_t brake_flag = 0;          //制动标志
 uint16_t correct = 0;
 uint8_t Disable_Speed_flag = 0;   //低速标志
+
+
+       
+extern RegUpdateCb p_WitRegUpdateCbFunc;     //九轴数据 
+extern volatile char  s_cDataUpdate;
 
 
 u8 VCU_Command_Send[8];           //VCU_Command发送报文数组
@@ -278,6 +291,12 @@ void BSP_Init(void)
 	CAN_Config();       //CAN初始化
   Adc1_Init();	
   Adc2_Init();
+	
+	WitInit(WIT_PROTOCOL_CAN, 0x50);
+	WitRegisterCallBack(SensorDataUpdata);
+	WitCanWriteRegister(Wit_Can_Send_Msg);
+	WitDelayMsRegister(Wit_Delayms);
+	
 }
 
 /***********************************************************************
@@ -399,6 +418,20 @@ static void AppTaskCreate(void)
 	else
 		printf("CAN_RX_HANDLE任务创建失败!\r\n");	
 	
+		  /* 创建Wit_Dat_HANDLE任务 */
+	xReturn = xTaskCreate((TaskFunction_t	)Wit_Dat_HANDLE,		                 //任务函数
+															(const char* 	)"Wit_Dat_HANDLE",		           //任务名称
+															(uint16_t 		)Wit_Dat_HANDLE_Stack,					 //任务堆栈大小
+															(void* 		  	)NULL,  				               //传递给任务函数的参数
+															(UBaseType_t 	)Wit_Dat_HANDLE_Pr, 				     //任务优先级
+															(TaskHandle_t*  )&Wit_Dat_HANDLE_Task_Handle);	   //任务控制块指针   
+	
+	if(pdPASS == xReturn)/* 创建成功 */
+		printf("Wit_Dat_HANDLE任务创建成功!\r\n");
+	else
+		printf("Wit_Dat_HANDLE任务创建失败!\r\n");		
+	
+
 	
   vTaskDelete(AppTaskCreate_Handle);                                            //删除AppTaskCreate任务
     
@@ -704,9 +737,15 @@ static void CAN_RX_HANDLE(void* parameter)
 			for(i = 0; i < 8; i++) {DBG_Status_Receive[i] = RxMessage.Data[i];}
 			xEventGroupSetBits(EventGroupHandler,EVENTBIT_5);
 		}
-		vTaskDelay(10);
+		//九轴CAN报文
+		if((RxMessage.StdId==Wit_dat) && (RxMessage.IDE==CAN_Id_Standard) && (RxMessage.DLC==8))
+		{
+			WitCanDataIn(RxMessage.Data, RxMessage.DLC);
+			xEventGroupSetBits(EventGroupHandler,EVENTBIT_6);
+		}
 	}
 }
+
 
 
 /**********************************************************************
@@ -726,7 +765,7 @@ static __INLINE void LINEAR_SPEED_DEAL(void)
 	 if(difference_value > Sensitivity){Motor_status = 1;}                   //减速
 	 else if(difference_value + Sensitivity >= 0&&difference_value <= Sensitivity){Motor_status = 2;}//匀速
 	 else if(difference_value + Sensitivity< 0){Motor_status = 3;}           //加速
-	 printf("Motor_status = %d\r\n",Motor_status);	 
+//	 printf("Motor_status = %d\r\n",Motor_status);	 
 	 switch(Motor_status)
 	 {
 		 case(1):
@@ -873,3 +912,57 @@ static __INLINE void ADC_Get_Throttle_Signal(void) //ADC获取油门信号
 		Throttle_Signal = adc*(Motorspeed*1.0/3300);
 	}
 }
+
+
+
+/**********************************************************************
+  * @ API  ： Wit_Dat_HANDLE
+  * @ brief： 处理九轴传感接受的报文
+  * @ param： None 
+  * @ retval：None
+  ********************************************************************/
+static void Wit_Dat_HANDLE(void* parameter)
+{
+	int i;
+	float fAcc[3], fGyro[3], fAngle[3];
+	EventBits_t r_event;
+	while(1)
+	{
+		r_event = xEventGroupWaitBits(EventGroupHandler,EVENTBIT_6,pdTRUE,pdTRUE,portMAX_DELAY);
+		if((r_event&EVENTBIT_6) == EVENTBIT_6)
+		{
+			CmdProcess();
+			if(s_cDataUpdate)
+			{
+				for(i = 0; i < 3; i++)
+				{
+					fAcc[i] = sReg[AX+i] / 32768.0f * 16.0f;
+					fGyro[i] = sReg[GX+i] / 32768.0f * 2000.0f;
+					fAngle[i] = sReg[Roll+i] / 32768.0f * 180.0f;
+				}
+				if(s_cDataUpdate & ACC_UPDATE)
+				{
+					printf("acc:%.3f %.3f %.3f\r\n", fAcc[0], fAcc[1], fAcc[2]);
+					s_cDataUpdate &= ~ACC_UPDATE;
+				}
+				if(s_cDataUpdate & GYRO_UPDATE)
+				{
+					printf("gyro:%.3f %.3f %.3f\r\n", fGyro[0], fGyro[1], fGyro[2]);
+					s_cDataUpdate &= ~GYRO_UPDATE;
+				}
+				if(s_cDataUpdate & ANGLE_UPDATE)
+				{
+					printf("angle:%.3f %.3f %.3f\r\n", fAngle[0], fAngle[1], fAngle[2]);
+					s_cDataUpdate &= ~ANGLE_UPDATE;
+				}
+				if(s_cDataUpdate & MAG_UPDATE)
+				{
+					printf("mag:%d %d %d\r\n", sReg[HX], sReg[HY], sReg[HZ]);
+					s_cDataUpdate &= ~MAG_UPDATE;
+				}
+			}
+			vTaskDelay(Wit_Dat_HANDLE_Delay);
+		}
+	}
+}
+

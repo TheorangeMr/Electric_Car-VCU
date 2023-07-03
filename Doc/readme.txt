@@ -14,6 +14,10 @@ vTaskDelay:
 #define   MCU_STATUS2_Delay							399                    //MCU STATUS2     20sm
 #define   MCU_STATUS3_Delay							299                    //MCU STATUS3     20sm
 #define   MCU_STATUS4_Delay							199                    //MCU STATUS4     50sm
+#define   Wit_collect_Delay                         200	
 
 2023.7.2
-添加九轴传感器，通过CAN通讯采集三轴加速度
+移植九轴传感器SDK，通过CAN通讯采集三轴加速度
+添加九轴采集线程
+
+

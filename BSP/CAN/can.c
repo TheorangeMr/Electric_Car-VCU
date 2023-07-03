@@ -164,6 +164,32 @@ u8 Can_Send_Msg(u32 Ext_ID,u8* msg,u8 len)
 		return 1;//传输失败
 }
 
+
+/*
+	函数名：Wit_Can_Send_Msg()
+	功  能：CAN发送帧函数
+  参  数：u8 ucStdId：扩展标识符, u8* msg：数据指针, u8 len：数据长度
+  返回值：PASSED:传输成功，FAILED:失败
+*/
+void Wit_Can_Send_Msg(uint8_t ucStdId, uint8_t* msg, uint32_t len)
+{
+	uint8_t mbox;
+	uint16_t i=0;
+	CanTxMsg TxMessage;
+	TxMessage.StdId=ucStdId;			
+	TxMessage.ExtId=0;			
+	TxMessage.IDE=CAN_Id_Standard; 
+	TxMessage.RTR=CAN_RTR_Data;		
+	TxMessage.DLC=len;			
+	for(i=0;i<len;i++)
+	TxMessage.Data[i]=msg[i];			          
+	mbox= CAN_Transmit(CAN1, &TxMessage);   
+	i=0; 
+	while((CAN_TransmitStatus(CAN1, mbox)==CAN_TxStatus_Failed)&&(i<0XFFF))i++;
+}
+
+
+
 /*
 	函数名：CAN_RX_IRQHandler(void)
 	功  能：CAN中断接收函数

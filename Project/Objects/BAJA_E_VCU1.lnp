@@ -32,6 +32,7 @@
 ".\objects\adc.o"
 ".\objects\can.o"
 ".\objects\hgw_protocol.o"
+".\objects\wit_c_sdk.o"
 ".\objects\croutine.o"
 ".\objects\event_groups.o"
 ".\objects\list.o"
