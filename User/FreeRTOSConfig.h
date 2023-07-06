@@ -136,7 +136,7 @@
 //支持静态内存
 #define configSUPPORT_STATIC_ALLOCATION					1					
 //系统所有总的堆大小
-#define configTOTAL_HEAP_SIZE					((size_t)(10*1024)) 
+#define configTOTAL_HEAP_SIZE					((size_t)(10*1024))
 
 
 /* 某些运行FreeRTOS的硬件有两种方法选择下一个要执行的任务：

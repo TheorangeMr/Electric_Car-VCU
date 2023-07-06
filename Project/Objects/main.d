@@ -51,3 +51,4 @@
 .\objects\main.o: ..\BSP\wit_c_sdk\wit_c_sdk.h
 .\objects\main.o: D:\software\keil 5 install\ARM\ARMCC\Bin\..\include\string.h
 .\objects\main.o: ..\BSP\wit_c_sdk\REG.h
+.\objects\main.o: ..\BSP\dangwei\dangwei.h

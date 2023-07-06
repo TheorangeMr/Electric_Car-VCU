@@ -13,13 +13,14 @@
 #include "queue.h"
 #include "semphr.h"
 
+
 #include "bsp_delay.h"
 #include "adc.h"
 #include "can.h"
 #include "usart.h"
 #include "HGW_Protocol.h"
 #include "wit_c_sdk.h"
-
+#include "dangwei.h"
 
 /*
 *************************************************************************
@@ -44,6 +45,10 @@
 EventGroupHandle_t EventGroupHandler = NULL;	
 SemaphoreHandle_t  BinarySem1_Handle = NULL;
 SemaphoreHandle_t  BinarySem2_Handle = NULL;
+SemaphoreHandle_t  BinarySem3_Handle = NULL;
+
+
+//SemaphoreHandle_t  MuxSem_Handle = NULL;    //互斥信号量句柄
 
 #define EVENTBIT_0	(1<<0)				//发送指令事件位
 #define EVENTBIT_1	(1<<1)				//MCU_STATUS1指令事件位
@@ -67,7 +72,10 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define   MCU_STATUS3_Pr							9
 #define   MCU_STATUS4_Pr							8
 #define   CAN_RX_HANDLE_Pr           16 
-#define   Wit_Dat_HANDLE_Pr					 18
+#define   Wit_Dat_HANDLE_Pr					 6
+#define   Dangwei_HANDLE_Pr					 17	
+#define   Dangwei_Scan_Pr            7
+
 
 /*
 *************************************************************************
@@ -84,6 +92,10 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define   MCU_STATUS4_Delay							199                    //MCU STATUS4     50sm
 #define   CAN_RX_HANDLE_Delay           1
 #define   Wit_Dat_HANDLE_Delay          15
+#define   Dangwei_HANDLE_Delay          9
+#define   Dangwei_Scan_Delay          	99
+
+
 
 /*
 *************************************************************************
@@ -106,7 +118,9 @@ SemaphoreHandle_t  BinarySem2_Handle = NULL;
 #define   MCU_STATUS4_Stack      64
 #define   VCU_Brake_Stack        128
 #define   CAN_RX_HANDLE_Stack    256
-#define   Wit_Dat_HANDLE_Stack   128
+#define   Wit_Dat_HANDLE_Stack   64
+#define   Dangwei_HANDLE_Stack   128
+#define   Dangwei_Scan_Stack   	 64
 
 
 /*
@@ -124,6 +138,9 @@ static TaskHandle_t MCU_STATUS3_Task_Handle = NULL;
 static TaskHandle_t MCU_STATUS4_Task_Handle = NULL;
 static TaskHandle_t CAN_RX_HANDLE_Task_Handle = NULL;
 static TaskHandle_t Wit_Dat_HANDLE_Task_Handle = NULL;
+static TaskHandle_t Dangwei_HANDLE_Task_Handle = NULL;
+static TaskHandle_t Dangwei_Scan_Task_Handle = NULL;
+
 
 /*
 *************************************************************************
@@ -174,6 +191,8 @@ static void MCU_STATUS2_Show(void* parameter);
 static void MCU_STATUS3_Show(void* parameter);
 static void MCU_STATUS4_Show(void* parameter);
 static void Wit_Dat_HANDLE(void* parameter);
+static void Dangwei_HANDLE(void* parameter);
+static void Dangwei_Scan(void* parameter);
 static __INLINE void LINEAR_SPEED_DEAL(void);
 static __INLINE void ADC_Get_Throttle_Signal(void);
 
@@ -185,8 +204,11 @@ static __INLINE void ADC_Get_Throttle_Signal(void);
 *************************************************************************
 */
 
-#define Torque_Limit_High       500        //转矩上限
-#define Torque_Limit_Low        20          //转矩下限
+#define D_Torque_Limit_High       500        //转矩上限
+#define D_Torque_Limit_Low        20          //转矩下限
+#define R_Torque_Limit_High       1000        //转矩上限
+#define R_Torque_Limit_Low        20          //转矩下限
+
 #define  Motorspeed             2000      //电机速度设置xxx（r/min）
 #define  Sensitivity            100        //速度响应灵敏度
 #define  Disable_Speed          50        //最低转速
@@ -195,13 +217,16 @@ static __INLINE void ADC_Get_Throttle_Signal(void);
 CanTxMsg TxMessage;               //CAN发送信息结构体
 CanRxMsg RxMessage;               //CAN接收信息结构体
 VCU_COMMAND_t vcu_cmd;            // VCU_COMMAND命令参数结构体
+VCU_COMMAND2_t vcu_cmd2;            // VCU_COMMAND2命令参数结构体
 int Throttle_Signal = 0;
 int Memory_Throttle_Signal = 0;
 uint8_t brake_flag = 0;          //制动标志
 uint16_t correct = 0;
 uint8_t Disable_Speed_flag = 0;   //低速标志
 
+uint8_t Gears_flag = 0;
 
+uint8_t Gears_status = 0;       
        
 extern RegUpdateCb p_WitRegUpdateCbFunc;     //九轴数据 
 extern volatile char  s_cDataUpdate;
@@ -289,14 +314,14 @@ void BSP_Init(void)
 	Delay_Init(72);
 	uart_init(115200);	//串口初始化为115200
 	CAN_Config();       //CAN初始化
-  Adc1_Init();	
+  Adc1_Init();
   Adc2_Init();
+	dangwei_gpio_init();
 	
 	WitInit(WIT_PROTOCOL_CAN, 0x50);
 	WitRegisterCallBack(SensorDataUpdata);
 	WitCanWriteRegister(Wit_Can_Send_Msg);
 	WitDelayMsRegister(Wit_Delayms);
-	
 }
 
 /***********************************************************************
@@ -310,6 +335,16 @@ static void AppTaskCreate(void)
 	BaseType_t xReturn = pdPASS;     /* 定义一个创建信息返回值，默认为pdPASS */	
   taskENTER_CRITICAL();           //进入临界区
 
+	
+	/* 创建MuxSem */
+//  MuxSem_Handle = xSemaphoreCreateMutex();	 
+//  if(NULL != MuxSem_Handle)
+//    printf("MuxSem_Handle互斥量创建成功!\r\n");
+
+//  xReturn = xSemaphoreGive( MuxSem_Handle );//给出互斥量
+//  if( xReturn == pdTRUE )
+//  printf("释放信号量!\r\n");
+	
 	/* 创建EventGroup */  
 	EventGroupHandler = xEventGroupCreate();
 	if(NULL != EventGroupHandler)
@@ -317,6 +352,7 @@ static void AppTaskCreate(void)
 	
 	BinarySem1_Handle = xSemaphoreCreateBinary();
 	BinarySem2_Handle = xSemaphoreCreateBinary();
+	BinarySem3_Handle = xSemaphoreCreateBinary();
 	if(NULL != BinarySem1_Handle){
 		printf("BinarySem1_Handle 二值信号量创建成功！\r\n");
 	}	
@@ -324,7 +360,9 @@ static void AppTaskCreate(void)
 		CAN_ITConfig(CANx, CAN_IT_FMP0, ENABLE);
 		printf("BinarySem2_Handle 二值信号量创建成功！\r\n");
 	}	
-	
+	if(NULL != BinarySem3_Handle){
+		printf("BinarySem3_Handle 二值信号量创建成功！\r\n");
+	}		
 	  /* 创建VCU_BRAKE_TASK任务 */
 	xReturn = xTaskCreate((TaskFunction_t	)VCU_Brake_Task,		               //任务函数
 															(const char* 	)"VCU_Brake_Task",		         //任务名称
@@ -418,6 +456,32 @@ static void AppTaskCreate(void)
 	else
 		printf("CAN_RX_HANDLE任务创建失败!\r\n");	
 	
+		  /* 创建Dangwei_Scan任务 */
+	xReturn = xTaskCreate((TaskFunction_t	)Dangwei_Scan,		                 //任务函数
+															(const char* 	)"Dangwei_Scan",		           //任务名称
+															(uint16_t 		)Dangwei_Scan_Stack,					 //任务堆栈大小
+															(void* 		  	)NULL,  				               //传递给任务函数的参数
+															(UBaseType_t 	)Dangwei_Scan_Pr, 				     //任务优先级
+															(TaskHandle_t*  )&Dangwei_Scan_Task_Handle);	   //任务控制块指针   
+	
+	if(pdPASS == xReturn)/* 创建成功 */
+		printf("Dangwei_Scan任务创建成功!\r\n");
+	else
+		printf("Dangwei_Scan任务创建失败!\r\n");
+
+		  /* 创建Dangwei_HANDLE任务 */
+	xReturn = xTaskCreate((TaskFunction_t	)Dangwei_HANDLE,		                 //任务函数
+															(const char* 	)"Dangwei_HANDLE",		           //任务名称
+															(uint16_t 		)Dangwei_HANDLE_Stack,					 //任务堆栈大小
+															(void* 		  	)NULL,  				               //传递给任务函数的参数
+															(UBaseType_t 	)Dangwei_HANDLE_Pr, 				     //任务优先级
+															(TaskHandle_t*  )&Dangwei_HANDLE_Task_Handle);	   //任务控制块指针   
+	
+	if(pdPASS == xReturn)/* 创建成功 */
+		printf("Dangwei_HANDLE任务创建成功!\r\n");
+	else
+		printf("Dangwei_HANDLE任务创建失败!\r\n");			
+	
 		  /* 创建Wit_Dat_HANDLE任务 */
 	xReturn = xTaskCreate((TaskFunction_t	)Wit_Dat_HANDLE,		                 //任务函数
 															(const char* 	)"Wit_Dat_HANDLE",		           //任务名称
@@ -430,8 +494,6 @@ static void AppTaskCreate(void)
 		printf("Wit_Dat_HANDLE任务创建成功!\r\n");
 	else
 		printf("Wit_Dat_HANDLE任务创建失败!\r\n");		
-	
-
 	
   vTaskDelete(AppTaskCreate_Handle);                                            //删除AppTaskCreate任务
     
@@ -457,13 +519,23 @@ static void VCU_COMMAND_Send(void* parameter) //VCU_COMMAND配置
 		vcu_cmd.MCU_Enable = 1;
 		vcu_cmd.Fault_Reset = 0;
 		vcu_cmd.Control_Mode = Speed_Control;
-		vcu_cmd.Demand_Limit_High = Torque_Limit_High;    //转矩上限
-		vcu_cmd.Demand_Limit_Low = Torque_Limit_Low;     //转速下限
+		if(Gears_status == 1)
+		{
+			vcu_cmd.Demand_Limit_High = D_Torque_Limit_High;    //前进转矩上限
+			vcu_cmd.Demand_Limit_Low = D_Torque_Limit_Low; 
+		}
+		else if(Gears_status == 2)
+		{
+			vcu_cmd.Demand_Limit_High = R_Torque_Limit_High;    //后退转矩上限
+			vcu_cmd.Demand_Limit_Low = R_Torque_Limit_Low;
+		}
+    //转速下限
 		vcu_cmd.Live_Counter = 0;
 		vcu_cmd.Demand_Torque = 0;
 		ADC_Get_Throttle_Signal();
 		#if USRAT_Memory_Throttle_Signal
 		printf("Memory_Throttle_Signal = %d\r\n",Memory_Throttle_Signal);
+		printf("Memory_Throttle_Signal = %d\r\n",-Memory_Throttle_Signal);		
 		#endif
 		#if USART_Throttle_Signal_1
 		printf("Throttle_Signal = %d\r\n",Throttle_Signal);
@@ -786,7 +858,14 @@ static __INLINE void LINEAR_SPEED_DEAL(void)
 							vTaskDelay(15);
 							goto Disable_Speed_flag;
 						}
-						vcu_cmd.Demand_Speed = Throttle_Signal;
+						if(Gears_status == 1)
+						{
+							vcu_cmd.Demand_Speed = Throttle_Signal;
+						}
+						else if(Gears_status == 2)
+						{
+							vcu_cmd.Demand_Speed = -Throttle_Signal;
+						}
 						vTaskDelay(50);                                                //调参值
 					}
 					Disable_Speed_flag = 0;
@@ -795,7 +874,14 @@ static __INLINE void LINEAR_SPEED_DEAL(void)
 				{
 	        if(Throttle_Signal>=Disable_Speed)
 					{
-						vcu_cmd.Demand_Speed = Throttle_Signal;				
+						if(Gears_status == 1)
+						{
+							vcu_cmd.Demand_Speed = Throttle_Signal;							
+						}
+						else if(Gears_status == 2)
+						{
+							vcu_cmd.Demand_Speed = -Throttle_Signal;
+						}	
 					}
 					else
 					{
@@ -817,7 +903,16 @@ static __INLINE void LINEAR_SPEED_DEAL(void)
 				{
 					 if(Memory_Throttle_Signal >= Disable_Speed)
 					 {
-							vcu_cmd.Demand_Speed = Memory_Throttle_Signal;
+							if(Gears_status == 1)
+							{
+								vcu_cmd.Demand_Speed = Memory_Throttle_Signal;
+								//printf("%d",Memory_Throttle_Signal);
+							}
+							else if(Gears_status == 2)
+							{
+								vcu_cmd.Demand_Speed = -Memory_Throttle_Signal;
+								//printf("%d",Memory_Throttle_Signal*-1);
+							}
 					 }
 					 else
 					 {	//掉电，电机变为空挡
@@ -834,7 +929,14 @@ static __INLINE void LINEAR_SPEED_DEAL(void)
 				{
 					 if(Throttle_Signal >= Disable_Speed)
 					 {
-							vcu_cmd.Demand_Speed = Throttle_Signal;
+						  if(Gears_status == 1)
+							{
+								vcu_cmd.Demand_Speed = Throttle_Signal;							
+							}
+							else if(Gears_status == 2)
+							{
+								vcu_cmd.Demand_Speed = -Throttle_Signal;
+							}
 					 }
 					 else
 					 {
@@ -855,11 +957,25 @@ static __INLINE void LINEAR_SPEED_DEAL(void)
 				{
 					if(Throttle_Signal < mcu_sta1.Motor_Speed)
 					{
-						vcu_cmd.Demand_Speed = mcu_sta1.Motor_Speed;
+						if(Gears_status == 1)
+						{
+							vcu_cmd.Demand_Speed = mcu_sta1.Motor_Speed;							
+						}
+						else if(Gears_status == 2)
+						{
+							vcu_cmd.Demand_Speed = -mcu_sta1.Motor_Speed;
+						}
 					}
 					else
 					{
-						vcu_cmd.Demand_Speed = Throttle_Signal;					 //Memory_Throttle_Signal
+						if(Gears_status == 1)
+						{
+							vcu_cmd.Demand_Speed = Throttle_Signal;     //Memory_Throttle_Signal							
+						}
+						else if(Gears_status == 2)
+						{
+							vcu_cmd.Demand_Speed = -Throttle_Signal;
+						}						
 					}
 				}
 				else
@@ -909,7 +1025,11 @@ static __INLINE void ADC_Get_Throttle_Signal(void) //ADC获取油门信号
 	{
 		Memory_Throttle_Signal = Throttle_Signal;
 		adc = ADC_SingleMode_GetAverageValue(ADC1,ADC_Channel_1)-correct;
-		Throttle_Signal = adc*(Motorspeed*1.0/3300);
+		if(Gears_status == 1 || Gears_status == 2)
+		{
+			Throttle_Signal = adc*(Motorspeed*1.0/3300);
+		}
+		else{Throttle_Signal = 0;}
 	}
 }
 
@@ -965,4 +1085,79 @@ static void Wit_Dat_HANDLE(void* parameter)
 		}
 	}
 }
+
+
+/**********************************************************************
+  * @ API  ： Dangwei_Scan
+  * @ brief： 车辆启动及挡位切换扫描
+  * @ param： None 
+  * @ retval：None
+  ********************************************************************/
+static void Dangwei_Scan(void* parameter)
+{
+	uint8_t key_value = 0xff;
+	static uint8_t daishi_flag = 0;
+	while(1)
+	{
+//		xSemaphoreTake(MuxSem_Handle,portMAX_DELAY);
+		key_value = Key_scan();
+		if(key_value == 1 && brake_flag == 1  )               
+		{
+			daishi_flag = 1;
+			printf("1\r\n");
+		}	
+		if(daishi_flag == 1)
+		{
+			if(key_value == 2)          //前进挡
+			{
+//				xSemaphoreGive( MuxSem_Handle );             //给出互斥量
+				Gears_flag = 0xa;
+				xSemaphoreGive(BinarySem3_Handle);
+				printf("2\r\n");
+			}
+			else if(key_value == 3)          //后退档
+			{
+//				xSemaphoreGive( MuxSem_Handle );             //给出互斥量	
+				Gears_flag = 0xb;
+				xSemaphoreGive(BinarySem3_Handle);
+				printf("3\r\n");
+			}
+		}
+		vTaskDelay(Dangwei_HANDLE_Delay);
+	}
+}
+
+/**********************************************************************
+  * @ API  ： Dangwei_HANDLE
+  * @ brief： 车辆启动及挡位切换处理函数
+  * @ param： None 
+  * @ retval：None
+  ********************************************************************/
+static void Dangwei_HANDLE(void* parameter)
+{
+	uint8_t res = 0;
+	while(1)
+	{
+		xSemaphoreTake(BinarySem3_Handle,portMAX_DELAY);		//MuxSem_Handle
+		printf("Gears_flag = %d\r\n",Gears_flag);
+		if(Gears_flag == 0xa)
+		{
+			vcu_cmd2.Gears_Signal = Gears_D;
+			Gears_status = 1;printf("前进%d\r\n",Gears_status);
+		}
+		else if(Gears_flag == 0xb)
+		{
+			vcu_cmd2.Gears_Signal = Gears_R;
+			Gears_status = 2;printf("倒挡%d\r\n",Gears_status);
+		}
+		Gears_flag = 0;
+		res = VCU_COMMAND2_SendData_Process(vcu_cmd2, VCU_Command_Send);
+		if(res == 0) /* 加工完成 */
+		{
+			res = Can_Send_Msg(VCU_Command, VCU_Command_Send, 8);//发送8个字节
+		}
+		vTaskDelay(Dangwei_Scan_Delay);
+	}
+}
+
 

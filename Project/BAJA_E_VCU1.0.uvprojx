@@ -339,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>USE_STDPERIPH_DRIVER,STM32F10X_HD</Define>
               <Undefine></Undefine>
-              <IncludePath>..\BSP\ADC;..\BSP\CAN;..\BSP\HGW_Protocol;..\FreeRtos\include;..\FreeRtos\portable\ARM_CM3;..\Library\CMSIS;..\Library\STM32F10x_StdPeriph_Driver\inc;..\User;..\User\delay;..\User\sys;..\User\USART;..\User\delay-FreeRTOS;..\BSP\wit_c_sdk</IncludePath>
+              <IncludePath>..\BSP\ADC;..\BSP\CAN;..\BSP\HGW_Protocol;..\FreeRtos\include;..\FreeRtos\portable\ARM_CM3;..\Library\CMSIS;..\Library\STM32F10x_StdPeriph_Driver\inc;..\User;..\User\delay;..\User\sys;..\User\USART;..\User\delay-FreeRTOS;..\BSP\wit_c_sdk;..\BSP\dangwei</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -582,6 +582,11 @@
               <FileName>wit_c_sdk.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\BSP\wit_c_sdk\wit_c_sdk.c</FilePath>
+            </File>
+            <File>
+              <FileName>dangwei.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\BSP\dangwei\dangwei.c</FilePath>
             </File>
           </Files>
         </Group>
